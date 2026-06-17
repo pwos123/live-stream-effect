@@ -1,0 +1,14 @@
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const PORT = Number(process.env.PORT || 8787);
+const publicDir = path.join(__dirname, 'public');
+const clients = new Set();
+const recent = new Map();
+const types = { '.html':'text/html; charset=utf-8', '.js':'application/javascript; charset=utf-8', '.css':'text/css; charset=utf-8' };
+function send(res, code, body, headers={}){res.writeHead(code, headers);res.end(body)}
+function normalizeEvent(raw={}){return {id:raw.id||`${Date.now()}-${Math.random().toString(16).slice(2)}`,type:String(raw.type||'comment'),user:String(raw.user||raw.nickname||'观众').slice(0,32),text:String(raw.text||raw.comment||raw.giftName||'').slice(0,120),count:Math.max(1,Number(raw.count||1)),ts:Date.now()}}
+function ingest(raw){const evt=normalizeEvent(raw),key=`${evt.type}|${evt.user}|${evt.text}`.toLowerCase(),last=recent.get(key)||0;if(Date.now()-last<1800)return{ok:true,deduped:true,event:evt};recent.set(key,Date.now());for(const [k,t] of recent)if(Date.now()-t>60000)recent.delete(k);const payload=`event: effect\ndata: ${JSON.stringify(evt)}\n\n`;for(const res of clients)res.write(payload);return{ok:true,event:evt}}
+function parseJson(req){return new Promise((resolve,reject)=>{let b='';req.on('data',c=>{b+=c;if(b.length>1e6){req.destroy();reject(new Error('body too large'))}});req.on('end',()=>{try{resolve(b?JSON.parse(b):{})}catch(e){reject(e)}})})}
+const server=http.createServer(async(req,res)=>{const url=new URL(req.url,`http://${req.headers.host}`);if(url.pathname==='/events'){res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','Access-Control-Allow-Origin':'*'});res.write(': connected\n\n');clients.add(res);req.on('close',()=>clients.delete(res));return}if(url.pathname==='/api/event'&&req.method==='POST'){try{return send(res,200,JSON.stringify(ingest(await parseJson(req))),{'Content-Type':'application/json'})}catch(e){return send(res,400,JSON.stringify({ok:false,error:e.message}),{'Content-Type':'application/json'})}}if(url.pathname==='/health')return send(res,200,JSON.stringify({ok:true,clients:clients.size}),{'Content-Type':'application/json'});let file=url.pathname==='/'?'/control.html':url.pathname;file=path.normalize(file).replace(/^([.][.][\/])+/, '');const full=path.join(publicDir,file);if(!full.startsWith(publicDir))return send(res,403,'forbidden');fs.readFile(full,(err,buf)=>err?send(res,404,'not found'):send(res,200,buf,{'Content-Type':types[path.extname(full)]||'application/octet-stream'}))});
+server.listen(PORT,()=>{console.log('Live effect server running:');console.log(`  Overlay: http://127.0.0.1:${PORT}/overlay.html`);console.log(`  Douyin OCR monitor: http://127.0.0.1:${PORT}/monitor.html`);console.log(`  Test console: http://127.0.0.1:${PORT}/control.html`)});
